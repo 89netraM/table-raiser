@@ -1,0 +1,8 @@
+[package]
+edition = "2024"
+name = "table-raiser-cli"
+version = "0.1.0"
+
+[dependencies]
+anyhow = "1.0.105"
+serialport = "4.10.1"
