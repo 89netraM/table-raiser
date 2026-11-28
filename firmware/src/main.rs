@@ -3,11 +3,10 @@
 
 use embassy_executor::Spawner;
 use embassy_rp::{
-    adc,
-    peripherals::USB,
-    usb::{self, Driver},
+    adc, gpio::{Level, Output}, peripherals::USB, usb::{self, Driver},
 };
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_time::Timer;
 use embassy_usb::{Config, UsbDevice};
 use messages::{
     DOWNLINK_TOPICS, ENDPOINTS, UPLINK_TOPICS, WakeEndpoint, WakeRequest, WakeResponse,
@@ -31,7 +30,9 @@ embassy_rp::bind_interrupts!(pub struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
 });
 
-struct Context;
+struct Context {
+    wake: Output<'static>,
+}
 
 type AppDriver = usb::Driver<'static, USB>;
 type AppStorage = WireStorage<ThreadModeRawMutex, AppDriver, 256, 256, 64, 256>;
@@ -51,9 +52,9 @@ define_dispatch! {
     context: Context;
     endpoints: {
         list: ENDPOINTS;
-        | EndpointTy   | kind        | handler      |
-        | ------------ | ----------- | ------------ |
-        | WakeEndpoint | blocking    | wake_handler |
+        | EndpointTy   | kind  | handler      |
+        | ------------ | ----- | ------------ |
+        | WakeEndpoint | async | wake_handler |
     };
     topics_in: {
         list: DOWNLINK_TOPICS;
@@ -73,7 +74,9 @@ async fn main(spawner: Spawner) {
     let pbufs = PBUFS.take();
     let config = usb_config();
 
-    let context = Context;
+    let context = Context {
+        wake: Output::new(p.PIN_25, Level::High),
+    };
     let (device, tx_impl, rx_impl) = STORAGE.init(
         driver,
         config,
@@ -119,6 +122,9 @@ async fn usb_task(mut usb: UsbDevice<'static, AppDriver>) {
     usb.run().await;
 }
 
-fn wake_handler(_context: &mut Context, _header: VarHeader, _request: WakeRequest) -> WakeResponse {
+async fn wake_handler(context: &mut Context, _header: VarHeader, WakeRequest(millis): WakeRequest) -> WakeResponse {
+    context.wake.set_high();
+    Timer::after_millis(millis).await;
+    context.wake.set_low();
     WakeResponse
 }

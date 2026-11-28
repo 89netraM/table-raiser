@@ -2,8 +2,7 @@ mod client;
 
 use anyhow::Result;
 use client::TableRaiserClient;
-use std::time::Duration;
-use tokio::time::interval;
+use std::{io::Write, time::Duration};
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
@@ -14,7 +13,7 @@ pub async fn main() -> Result<()> {
             println!("Client is closed, exiting...");
         }
         result = run(&client) => {
-            _ = result?;
+            result?;
             println!("App is done")
         }
     };
@@ -23,15 +22,34 @@ pub async fn main() -> Result<()> {
 }
 
 async fn run(client: &TableRaiserClient) -> Result<()> {
-    let mut ticker = interval(Duration::from_millis(250));
-
-    for i in 0..10 {
-        ticker.tick().await;
-        print!("Pinging with {i}... ");
-        let res = client.ping(i).await?;
-        println!("got {res}!");
-        assert_eq!(res, i);
+    loop {
+        print!("> ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        match input.split_whitespace().collect::<Vec<_>>().as_slice() {
+            ["ping", d] if let Ok(id) = d.parse() => {
+                let response = client.ping(id).await?;
+                println!("pong {response}");
+            }
+            ["wake", d] if let Ok(ms) = d.parse() => {
+                client.wake(Duration::from_millis(ms)).await?;
+            }
+            ["exit"] => {
+                return Ok(());
+            }
+            ["help"] => print_help(),
+            _ => {
+                println!("Unknown command: \"{}\"", input.trim());
+                print_help();
+            }
+        }
     }
 
-    Ok(())
+    fn print_help() {
+        println!("Available commands: ");
+        println!("ping <id>: ping with <id> expecting the same as response");
+        println!("wake <d>: pull wake pin high for <d> ms");
+        println!("exit: disconnects and exits the cli");
+    }
 }

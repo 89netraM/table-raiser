@@ -4,7 +4,7 @@ use postcard_rpc::{
     host_client::{HostClient, HostErr},
     standard_icd::{ERROR_PATH, PingEndpoint, WireError},
 };
-use std::{convert::Infallible};
+use std::{convert::Infallible, time::Duration};
 use thiserror::Error;
 
 pub struct TableRaiserClient {
@@ -32,8 +32,10 @@ impl TableRaiserClient {
         Ok(val)
     }
 
-    pub async fn wake(&self) -> Result<(), ClientError<Infallible>> {
-        self.client.send_resp::<WakeEndpoint>(&WakeRequest).await?;
+    pub async fn wake(&self, time: Duration) -> Result<(), ClientError<Infallible>> {
+        self.client
+            .send_resp::<WakeEndpoint>(&WakeRequest(time.as_millis() as u64))
+            .await?;
         Ok(())
     }
 }

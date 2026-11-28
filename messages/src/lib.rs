@@ -12,7 +12,7 @@ endpoints! {
 }
 
 #[derive(Serialize, Deserialize, Schema)]
-pub struct WakeRequest;
+pub struct WakeRequest(pub u64);
 
 #[derive(Serialize, Deserialize, Schema)]
 pub struct WakeResponse;
