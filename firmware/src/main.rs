@@ -2,75 +2,123 @@
 #![no_main]
 
 use embassy_executor::Spawner;
-use embassy_time::Timer;
-
+use embassy_rp::{
+    adc,
+    peripherals::USB,
+    usb::{self, Driver},
+};
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_usb::{Config, UsbDevice};
+use messages::{
+    DOWNLINK_TOPICS, ENDPOINTS, UPLINK_TOPICS, WakeEndpoint, WakeRequest, WakeResponse,
+};
 use panic_halt as _;
+use postcard_rpc::{
+    define_dispatch,
+    header::VarHeader,
+    server::{
+        Dispatch, Server,
+        impls::embassy_usb_v0_5::{
+            PacketBuffers, USB_FS_MAX_PACKET_SIZE,
+            dispatch_impl::{WireRxBuf, WireRxImpl, WireSpawnImpl, WireStorage, WireTxImpl},
+        },
+    },
+};
+use static_cell::ConstStaticCell;
 
-// For USB
-use embassy_rp::usb::Driver;
-use embassy_rp::{peripherals::USB, usb};
-use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
-use embassy_usb::{Builder, Config};
-
-embassy_rp::bind_interrupts!(struct Irqs {
+embassy_rp::bind_interrupts!(pub struct Irqs {
+    ADC_IRQ_FIFO => adc::InterruptHandler;
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
 });
+
+struct Context;
+
+type AppDriver = usb::Driver<'static, USB>;
+type AppStorage = WireStorage<ThreadModeRawMutex, AppDriver, 256, 256, 64, 256>;
+type BufStorage = PacketBuffers<1024, 1024>;
+type AppTx = WireTxImpl<ThreadModeRawMutex, AppDriver>;
+type AppRx = WireRxImpl<AppDriver>;
+type AppServer = Server<AppTx, AppRx, WireRxBuf, MyApp>;
+
+static PBUFS: ConstStaticCell<BufStorage> = ConstStaticCell::new(BufStorage::new());
+static STORAGE: AppStorage = AppStorage::new();
+
+define_dispatch! {
+    app: MyApp;
+    spawn_fn: spawn_fn;
+    tx_impl: AppTx;
+    spawn_impl: WireSpawnImpl;
+    context: Context;
+    endpoints: {
+        list: ENDPOINTS;
+        | EndpointTy   | kind        | handler      |
+        | ------------ | ----------- | ------------ |
+        | WakeEndpoint | blocking    | wake_handler |
+    };
+    topics_in: {
+        list: DOWNLINK_TOPICS;
+        | TopicTy   | kind        | handler      |
+        | --------- | ----------- | ------------ |
+    };
+    topics_out: {
+        list: UPLINK_TOPICS;
+    };
+}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    spawner.spawn(logger_task(p.USB).unwrap());
+    let driver = Driver::new(p.USB, Irqs);
+    let pbufs = PBUFS.take();
+    let config = usb_config();
 
-    let mut i: u8 = 0;
+    let context = Context;
+    let (device, tx_impl, rx_impl) = STORAGE.init(
+        driver,
+        config,
+        pbufs.tx_buf.as_mut_slice(),
+        USB_FS_MAX_PACKET_SIZE,
+    );
+    let dispatcher = MyApp::new(context, spawner.into());
+    let vkk = dispatcher.min_key_len();
+    let mut server: AppServer = Server::new(
+        tx_impl,
+        rx_impl,
+        pbufs.rx_buf.as_mut_slice(),
+        dispatcher,
+        vkk,
+    );
+    spawner.spawn(usb_task(device).unwrap());
+
     loop {
-        i = i.wrapping_add(1);
-        log::info!("USB says: {}", i);
-
-        Timer::after_secs(1).await;
+        _ = server.run().await;
     }
 }
 
-#[embassy_executor::task]
-async fn logger_task(usb: embassy_rp::Peri<'static, USB>) {
-    let driver = Driver::new(usb, Irqs);
-
+fn usb_config() -> Config<'static> {
     let mut config = Config::new(0xbada, 0x5501);
     config.manufacturer = Some("MoreTec");
     config.product = Some("Table Raiser");
     config.serial_number = Some("TR-0001");
+
+    // Required for windows compatibility.
+    config.device_class = 0xEF;
+    config.device_sub_class = 0x02;
+    config.device_protocol = 0x01;
+    config.composite_with_iads = true;
+
     config.max_power = 100;
     config.max_packet_size_0 = 64;
 
-    // Create embassy-usb DeviceBuilder using the driver and config.
-    // It needs some buffers for building the descriptors.
-    let mut config_descriptor = [0; 256];
-    let mut bos_descriptor = [0; 256];
-    let mut control_buf = [0; 64];
+    config
+}
 
-    let mut logger_state = State::new();
+#[embassy_executor::task]
+async fn usb_task(mut usb: UsbDevice<'static, AppDriver>) {
+    usb.run().await;
+}
 
-    let mut builder = Builder::new(
-        driver,
-        config,
-        &mut config_descriptor,
-        &mut bos_descriptor,
-        &mut [], // no msos descriptors
-        &mut control_buf,
-    );
-
-    // Create a class for the logger
-    let logger_class = CdcAcmClass::new(&mut builder, &mut logger_state, 64);
-
-    // Creates the logger and returns the logger future
-    // Note: You'll need to use log::info! afterwards instead of info! for this to work (this also applies to all the other log::* macros)
-    let log_fut = embassy_usb_logger::with_class!(1024, log::LevelFilter::Info, logger_class);
-
-    // Build the builder.
-    let mut usb = builder.build();
-
-    // Run the USB device.
-    let usb_fut = usb.run();
-
-    embassy_futures::join::join(usb_fut, log_fut).await;
+fn wake_handler(_context: &mut Context, _header: VarHeader, _request: WakeRequest) -> WakeResponse {
+    WakeResponse
 }

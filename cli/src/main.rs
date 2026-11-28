@@ -1,44 +1,37 @@
-use std::time::Duration;
+mod client;
 
 use anyhow::Result;
-use serialport::{SerialPortType, UsbPortInfo};
+use client::TableRaiserClient;
+use std::time::Duration;
+use tokio::time::interval;
 
-fn main() -> Result<()> {
-    let table_raiser_ports = serialport::available_ports()?
-        .into_iter()
-        .filter(|i| {
-            matches!(
-                i.port_type,
-                SerialPortType::UsbPort(UsbPortInfo {
-                    vid: 0xbada,
-                    pid: 0x5501,
-                    ..
-                })
-            )
-        })
-        .collect::<Vec<_>>();
+#[tokio::main]
+pub async fn main() -> Result<()> {
+    let client = TableRaiserClient::new().await;
 
-    let [table_raiser_port] = &table_raiser_ports[..] else {
-        return Ok(());
+    tokio::select! {
+        _ = client.wait_closed() => {
+            println!("Client is closed, exiting...");
+        }
+        result = run(&client) => {
+            _ = result?;
+            println!("App is done")
+        }
     };
 
-    eprintln!("Found one port: {}", &table_raiser_port.port_name);
+    Ok(())
+}
 
-    let mut serial = serialport::new(&table_raiser_port.port_name, 9600)
-        .timeout(Duration::from_secs(5))
-        .open()?;
-    let mut buffer = [0; 256];
-    loop {
-        let length = serial.read(&mut buffer)?;
-        if length == 0 {
-            eprintln!("End of stream");
-            return Ok(());
-        }
-        let data = &buffer[..length];
-        if let Ok(string) = str::from_utf8(&data) {
-            print!("{}", string);
-        } else {
-            println!("{:?}", data);
-        }
+async fn run(client: &TableRaiserClient) -> Result<()> {
+    let mut ticker = interval(Duration::from_millis(250));
+
+    for i in 0..10 {
+        ticker.tick().await;
+        print!("Pinging with {i}... ");
+        let res = client.ping(i).await?;
+        println!("got {res}!");
+        assert_eq!(res, i);
     }
+
+    Ok(())
 }

@@ -5,4 +5,20 @@ version = "0.1.0"
 
 [dependencies]
 anyhow = "1.0.105"
-serialport = "4.10.1"
+messages = { path = "../messages", features = ["use-std"] }
+postcard-rpc = {
+    git = "https://github.com/jamesmunns/postcard-rpc.git",
+    rev = "2469ebc614108ac2ab68d923d50c8da4c9f3e91d",
+    features = [
+        "use-std",
+        "raw-nusb",
+        "cobs-serial",
+    ],
+}
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+] }
+tokio-serial = "5.5.0"
